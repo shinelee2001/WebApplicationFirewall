@@ -1,11 +1,41 @@
 #include "http_inspector.h"
 #include <iostream>
 #include <string>
+#include <algorithm>
+#include <vector>
+#include <cctype>
 
 const char *DESTINATION_SERVER = "127.0.0.1";
 constexpr int DESTINATION_PORT = 5002;
 
 const int BUFFER_MAX = 4096;
+
+void printResponse(const std::string res) {
+    std::cout << "Http response is:\n=============================================================\n" 
+    << res << "\n=============================================================" 
+    << std::endl;
+}
+
+bool isSQLInjection(const std::string request) {
+    // convert request to lowercase
+    std::string lowercaseRequest = request;
+    std::transform(lowercaseRequest.begin(), lowercaseRequest.end(), lowercaseRequest.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+
+    // SQL injection keywords
+    std::vector<std::string> sqlKeywords = {
+        "select", "insert", "update", "delete", "drop", "alter", "truncate", "union", "join", "exec", "declare", "xp_"
+    };
+
+    // check if any of the SQL keywords are present in the request
+    for (const auto& keyword : sqlKeywords) {
+        if (lowercaseRequest.find(keyword) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
 
 HTTPRequestInspector::HTTPRequestInspector(int port): port{port} {}
 
@@ -85,24 +115,30 @@ bool HTTPRequestInspector::forwardResponse(char *buffer, int bytesReceived) {
         return false;
     }
 
-    char resBuffer[BUFFER_MAX];
-    // receive response from the dest server
-    int res = recv(destinationSocket, resBuffer, sizeof(resBuffer), 0);
-    if (res == SOCKET_ERROR) {
-        std::cerr << "Failed to receive response from destiantion server" << std::endl;
-        closesocket(destinationSocket);
-        return false;
-    }
+    // receive and forward response
+    while (true) {
+        char resBuffer[BUFFER_MAX];
+        // receive response from the dest server
+        int res = recv(destinationSocket, resBuffer, sizeof(resBuffer), 0);
+        if (res == SOCKET_ERROR) {
+            std::cerr << "Failed to receive response from destiantion server" << std::endl;
+            closesocket(destinationSocket);
+            return false;
+        }
 
-    std::string httpresponse{resBuffer, res};
-    std::cout << "Http response is:\n=============================================================\n" << httpresponse << "\n=============================================================" << std::endl;
+        if (res == 0) {
+            break;
+        }
+        std::string httpresponse{resBuffer, res};
+        printResponse(httpresponse);
 
-    // send the response back to the client
-    bytesSent = send(clientSocket, resBuffer, res, 0);
-    if (bytesSent == SOCKET_ERROR) {
-        std::cerr << "Failed to send response to client" << std::endl;
-        closesocket(destinationSocket);
-        return false;
+        // send the response back to the client
+        bytesSent = send(clientSocket, resBuffer, res, 0);
+        if (bytesSent == SOCKET_ERROR) {
+            std::cerr << "Failed to send response to client" << std::endl;
+            closesocket(destinationSocket);
+            return false;
+        }
     }
 
     closesocket(destinationSocket);
@@ -158,6 +194,20 @@ void HTTPRequestInspector::inspectRequests() {
         // inspect HTTP request
         std::string httpRequest{buffer};
         std::cout << "Http request is:\n=============================================================\n" << httpRequest << "\n=============================================================" << std::endl;
+
+        ////////////////////////////////////////
+        //        SQL injection check         //
+        ////////////////////////////////////////
+
+        if (isSQLInjection(httpRequest)) {
+            std::cerr << "SQL Injection detected in request from: " << inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
+            closesocket(clientSocket);
+            continue;
+        }
+
+        ////////////////////////////////////////
+        //      end SQL injection check       //
+        ////////////////////////////////////////
 
         this->forwardResponse(buffer, bytesReceived);
     }
