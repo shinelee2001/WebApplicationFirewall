@@ -1,6 +1,4 @@
-/.vscode
 /client
 
-fileUploader.h
 *.o
-WAF.exe
+*.exe
